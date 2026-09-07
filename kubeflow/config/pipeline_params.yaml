@@ -1,0 +1,19 @@
+# Pipeline Runtime Parameters
+params:
+  data_path: "gs://netflix-data/netflix_titles.csv"
+  n_features: 5000
+  min_df: 2
+  max_df: 0.8
+  deploy_model: true
+  model_name: "netflix_content_model"
+
+# Run configuration
+run:
+  name: "netflix-training-{{ timestamp }}"
+  namespace: "kubeflow"
+  experiment: "netflix-experiment"
+
+# Artifact locations
+artifacts:
+  bucket: "gs://netflix-data/kubeflow-pipelines"
+  prefix: "netflix-pipeline"

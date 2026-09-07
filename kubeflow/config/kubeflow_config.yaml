@@ -1,0 +1,43 @@
+# Kubeflow Configuration
+apiVeersion: kubeflow.org/v1
+kind: Pipeline
+metadata:
+  name: netflix-content-pipeline
+  namespace: kubeflow
+spec:
+  pipeline:
+    name: Netflix Content Recommendation
+    description: End-to-end ML pipeline for Netflix content
+
+# Pipeline parameters
+parameters:
+  data_path:
+    type: string
+    default: "gs://netflix-data/netflix_titles.csv"
+    description: "Path to Netflix dataset"
+
+  n_features:
+    type: integer
+    default: 5000
+    description: "Number of TF-IDF features"
+
+  min_df:
+    type: integer
+    default: 2
+    description: "Minimum document frequency"
+  
+  max_df:
+    type: number
+    default: 0.8
+    description: "Maximum document frequency"
+
+# Resources
+resources:
+  cpu: 4
+  memory: 16Gi
+  gpu: 0
+
+# Experiment tracking
+experiment:
+  name: netflix-experiment
+  namespace: kubeflow
