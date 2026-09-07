@@ -30,14 +30,12 @@ This pipeline handles:
 def load_data(
     data_path: str,
     output_data: Output[Dataset]
-) -> NamedTuple('Outputs', [
-    ('dataset_shape', str),
-    ('columns', str)
-]):
+) -> NamedTuple('LoadDataOutputs', [('dataset_shape', str), ('columns', str)]):
     """Load Netflix dataset from source"""
     import pandas as pd
     import json
     import logging
+    from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -62,10 +60,11 @@ def load_data(
     
     logger.info(f"Data loaded successfully! Shape: {shape}")
     logger.info(f"Columns: {columns[:5]}...")
-    
-    return (
-        json.dumps({"rows": shape[0], "cols": shape[1]}),
-        json.dumps(columns)
+
+    LoadDataOutputs = namedtuple('LoadDataOutputs', ['dataset_shape', 'columns'])
+    return LoadDataOutputs(
+        dataset_shape=json.dumps({"rows": shape[0], "cols": shape[1]}),
+        columns=json.dumps(columns)
     )
 
 # ============================================
@@ -76,22 +75,20 @@ def load_data(
     packages_to_install=[
         "pandas==2.0.3",
         "numpy==1.24.3",
-        "scikit-learn==1.3.0"
+        "scikit-learn==1.5.2"
     ]
 )
 def preprocess_data(
     input_data: Input[Dataset],
     output_data: Output[Dataset],
     output_features: Output[Artifact]
-) -> NamedTuple('Outputs', [
-    ('processed_shape', str),
-    ('missing_values', str)
-]):
+) -> NamedTuple('PreprocessOutputs', [('processed_shape', str), ('missing_values', str)]):
     """Preprocess Netflix data"""
     import pandas as pd
     import numpy as np
     import json
     import logging
+    from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -101,12 +98,12 @@ def preprocess_data(
     logger.info(f"Loaded data with shape: {df.shape}")
     
     # Handle missing values
-    df['director'].fillna('Unknown', inplace=True)
-    df['cast'].fillna('Unknown', inplace=True)
-    df['country'].fillna('Unknown', inplace=True)
-    df['date_added'].fillna(method='ffill', inplace=True)
-    df['rating'].fillna(df['rating'].mode()[0], inplace=True)
-    df['duration'].fillna(df['duration'].mode()[0], inplace=True)
+    df['director'] = df['director'].fillna('Unknown')
+    df['cast'] = df['cast'].fillna('Unknown')
+    df['country'] = df['country'].fillna('Unknown')
+    df['date_added'] = df['date_added'].fillna(method='ffill')
+    df['rating'] = df['rating'].fillna(df['rating'].mode()[0])
+    df['duration'] = df['duration'].fillna(df['duration'].mode()[0])
     
     # Convert date
     df['date_added'] = pd.to_datetime(df['date_added'])
@@ -114,13 +111,15 @@ def preprocess_data(
     df['month_added'] = df['date_added'].dt.month
     
     # Create combined features for similarity
+    text_cols = ['director', 'cast', 'listed_in', 'description']
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna('Unknown')
+
     df['combined_features'] = df.apply(
-        lambda row: ' '.join([
-            str(row['director']) if row['director'] != 'Unknown' else '',
-            str(row['cast']) if row['cast'] != 'Unknown' else '',
-            str(row['listed_in']) if row['listed_in'] != 'Unknown' else '',
-            str(row['description']) if row['description'] != 'Unknown' else ''
-        ]), axis=1
+        lambda r: " ".join(
+            [str(r[c]) for c in text_cols if c in r and str(r[c]).strip() != "Unknown"]
+        ), axis=1
     )
     
     # Save processed data
@@ -141,9 +140,10 @@ def preprocess_data(
     logger.info(f"Preprocessed data shape: {df.shape}")
     logger.info(f"Missing values: {missing}")
     
-    return (
-        json.dumps({"rows": df.shape[0], "cols": df.shape[1]}),
-        json.dumps(missing)
+    PreprocessOutputs = namedtuple('PreprocessOutputs', ['processed_shape', 'missing_values'])
+    return PreprocessOutputs(
+        processed_shape=json.dumps({"rows": df.shape[0], "cols": df.shape[1]}),
+        missing_values=json.dumps(missing)
     )
 
 # ============================================
@@ -154,7 +154,7 @@ def preprocess_data(
     packages_to_install=[
         "pandas==2.0.3",
         "numpy==1.24.3",
-        "scikit-learn==1.3.0",
+        "scikit-learn==1.5.2",
         "mlflow==2.6.0"
     ]
 )
@@ -165,11 +165,9 @@ def train_model(
     n_features: int = 5000,
     min_df: int = 2,
     max_df: float = 0.8
-) -> NamedTuple('Outputs', [
-    ('model_info', str),
-    ('train_metrics', str)
-]):
+) -> NamedTuple('TrainModelOutputs', [('model_info', str), ('train_metrics', str)]):
     """Train TF-IDF recommendation model"""
+    import os
     import pandas as pd
     import numpy as np
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -178,6 +176,7 @@ def train_model(
     import json
     import mlflow
     import logging
+    from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -196,25 +195,20 @@ def train_model(
     )
     
     # Fit and transform
-    logger.info("Fitting TF-IDF vectorizer...")
     tfidf_matrix = vectorizer.fit_transform(df['combined_features'])
-    logger.info(f"TF-IDF matrix shape: {tfidf_matrix.shape}")
-    
-    # Calculate similarity matrix
-    logger.info("Calculating cosine similarity...")
     similarity_matrix = cosine_similarity(tfidf_matrix)
     
     # Save model artifacts
-    model_path = model_output.path
-    with open(f"{model_path}/tfidf_vectorizer.pkl", 'wb') as f:
+    os.makedirs(model_output.path, exist_ok=True)
+    with open(f"{model_output.path}/tfidf_vectorizer.pkl", 'wb') as f:
         pickle.dump(vectorizer, f)
     
     # Save similarity matrix (if not too large)
     if similarity_matrix.shape[0] <= 10000:
-        np.save(f"{model_path}/similarity_matrix.npy", similarity_matrix)
+        np.save(f"{model_output.path}/similarity_matrix.npy", similarity_matrix)
     
     # Save processed data for recommendations
-    df.to_csv(f"{model_path}/processed_data.csv", index=False)
+    df.to_csv(f"{model_output.path}/processed_data.csv", index=False)
     
     # Save vectorizer info
     vectorizer_info = {
@@ -241,8 +235,9 @@ def train_model(
     }
     
     logger.info(f"Training metrics: {metrics}")
-    
-    return (
+
+    TrainModelOutputs = namedtuple('TrainModelOutputs', ['model_info', 'train_metrics'])
+    return TrainModelOutputs(
         json.dumps({'model_type': 'tfidf_cosine', 'status': 'success'}),
         json.dumps(metrics)
     )
@@ -255,7 +250,7 @@ def train_model(
     packages_to_install=[
         "pandas==2.0.3",
         "numpy==1.24.3",
-        "scikit-learn==1.3.0"
+        "scikit-learn==1.5.2"
     ]
 )
 def evaluate_model(
@@ -263,10 +258,7 @@ def evaluate_model(
     model_input: Input[Model],
     metrics_output: Output[Metrics],
     eval_report: Output[Artifact]
-) -> NamedTuple('Outputs', [
-    ('eval_metrics', str),
-    ('status', str)
-]):
+) -> NamedTuple('EvaluateOutputs', [('eval_metrics', str), ('status', str)]):
     """Evaluate the trained model"""
     import pandas as pd
     import numpy as np
@@ -274,6 +266,7 @@ def evaluate_model(
     import pickle
     import json
     import logging
+    from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -342,24 +335,23 @@ def evaluate_model(
     with open(eval_report.path, 'w') as f:
         json.dump(report, f, indent=2)
     
-    logger.info(f"Evaluation metrics: {eval_metrics}")
-    
+    logger.info(f"Evaluation metrics: {eval_metrics}")   
     status = 'success' if avg_precision > 0.5 else 'needs_improvement'
-    
-    return (
+
+    EvaluateModelOutputs = namedtuple('EvaluateOutputs', ['eval_metrics', 'status'])
+    return EvaluateModelOutputs(
         json.dumps(eval_metrics),
         status
     )
 
 # ============================================
-# Component 5: Deploy Model (Optional)
+# Component 5: Deploy Model
 # ============================================
 @component(
     base_image="python:3.9-slim",
     packages_to_install=[
-        "google-cloud-storage==2.10.0",
         "mlflow==2.6.0",
-        "boto3==1.26.137"
+        "scikit-learn==1.5.2",
     ]
 )
 def deploy_model(
@@ -387,10 +379,9 @@ def deploy_model(
     mlflow.set_experiment("kubeflow_netflix")
     
     with mlflow.start_run(run_name="kubeflow_pipeline"):
-        # Log model
         mlflow.sklearn.log_model(
-            vectorizer,
-            "tfidf_model",
+            sk_model=vectorizer,
+            artifact_path="tfidf_model",
             registered_model_name=model_name
         )
         
@@ -401,7 +392,6 @@ def deploy_model(
         })
     
     logger.info(f"✅ Model '{model_name}' deployed successfully!")
-    
     return f"Model {model_name} deployed to MLflow"
 
 # ============================================
@@ -417,7 +407,7 @@ def netflix_pipeline(
     n_features: int = 5000,
     min_df: int = 2,
     max_df: float = 0.8,
-    deploy_model: bool = True,
+    do_deploy: bool = True,  # 👈 Fixed: Changed name from deploy_model to do_deploy
     model_name: str = "netflix_content_model"
 ):
     """Kubeflow pipeline for Netflix content recommendation"""
@@ -451,10 +441,14 @@ def netflix_pipeline(
         evaluate_task.outputs['status'] == 'success',
         name="deploy_condition"
     ):
-        deploy_task = deploy_model(
-            model_input=train_task.outputs['model_output'],
-            model_name=model_name
-        )
+        with dsl.Condition(
+            do_deploy == True,
+            name="deploy_enabled"
+        ):
+            deploy_task = deploy_model(
+                model_input=train_task.outputs['model_output'],
+                model_name=model_name
+            )
 
 # ============================================
 # Compile the Pipeline
