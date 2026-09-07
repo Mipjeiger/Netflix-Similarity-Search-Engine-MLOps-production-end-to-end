@@ -1,0 +1,91 @@
+apiVersion: kubeflow.org/v1beta1
+kind: PipelineRun
+metadata:
+  name: netflix-pipeline-run-{{ timestamp }}
+  namespace: kubeflow
+  labels:
+    pipeline: netflix-content-pipeline
+    run-type: manual
+    environment: production
+  annotations:
+    description: "Netflix content recommendation training run"
+    triggered-by: "manual"
+spec:
+  # Reference to the pipeline
+  pipelineRef:
+    name: netflix-content-pipeline
+  
+  # Pipeline parameters
+  params:
+  - name: data_path
+    value: "gs://netflix-data/netflix_titles.csv"
+    description: "Path to Netflix dataset (GCS, local, or URL)"
+  
+  - name: n_features
+    value: "5000"
+    description: "Number of TF-IDF features"
+  
+  - name: min_df
+    value: "2"
+    description: "Minimum document frequency"
+  
+  - name: max_df
+    value: "0.8"
+    description: "Maximum document frequency"
+  
+  - name: deploy_model
+    value: "true"
+    description: "Whether to deploy model to production"
+  
+  - name: model_name
+    value: "netflix_content_model"
+    description: "MLflow model registry name"
+  
+  # Experiment tracking
+  experimentName: netflix-experiment
+  
+  # Run name
+  runName: "netflix-training-{{ timestamp }}"
+  
+  # Service account
+  serviceAccount: netflix-pipeline-runner
+  
+  # Resource specifications
+  podTemplate:
+    tolerations:
+    - key: "kubeflow"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+    
+    nodeSelector:
+      node-type: kubeflow-worker
+    
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+  
+  # Timeout settings
+  timeout: 3600s  # 1 hour
+  
+  # Artifact location
+  artifactLocation:
+    s3:
+      bucket: "tfidf_model"
+      endpoint: "s3.amazonaws.com"
+      accessKeySecret:
+        name: "s3-credentials"
+        key: "accessKey"
+      secretKeySecret:
+        name: "s3-credentials"
+        key: "secretKey"
+  
+  # Status tracking
+  status:
+    condition: []
+    completionTime: null
+    startTime: null

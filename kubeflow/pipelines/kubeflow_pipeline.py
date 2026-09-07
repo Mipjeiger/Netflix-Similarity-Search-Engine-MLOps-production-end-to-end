@@ -3,7 +3,9 @@ from kfp import dsl
 from kfp.dsl import component, Input, Output, Dataset, Model, Metrics
 from kfp.dsl import Artifact, HTML
 from typing import NamedTuple
-import json
+from dotenv import load_dotenv
+from pathlib import Path
+import os
 
 """
 Kubeflow Pipeline for Netflix Content Recommendation
@@ -16,15 +18,24 @@ This pipeline handles:
 5. Deploy Model
 """
 
+# Define envrionment variable for MinIO S3 access
+ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+# Path Configuration for DATA PATH
+DATA_LOCAL_PATH = Path(__file__).parent.parent.parent / "data" / "raw" / "netflix_titles.csv"
+
 # ============================================
 # Component 1: Load Dataset
 # ============================================
 @component(
-    base_image="python:3.9-slim",
+    base_image="python:3.11-slim",
     packages_to_install=[
         "pandas==2.0.3",
-        "numpy==1.24.3",
-        "gcsfs==2023.9.2"
+        "numpy==1.26.2",
+        "s3fs==2023.9.2"
     ]
 )
 def load_data(
@@ -35,6 +46,7 @@ def load_data(
     import pandas as pd
     import json
     import logging
+    import os
     from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
@@ -42,16 +54,25 @@ def load_data(
     
     logger.info(f"Loading data from: {data_path}")
     
-    # Load data (can be from GCS, local, or URL)
-    if data_path.startswith('gs://'):
-        import gcsfs
-        fs = gcsfs.GCSFileSystem()
-        with fs.open(data_path) as f:
-            df = pd.read_csv(f)
+    # Load data fro MinioS3 with fallback to local file system
+    if data_path.startswith("s3://") or data_path.startswith("minio://"):
+        s3_path = data_path.replace("minio://", "s3://")
+
+        # Configure local MinIO endpoint and credentials
+        storage_options = {
+            "key": os.getenv("AWS_ACCESS_KEY_ID"),
+            "secret": os.getenv("AWS_SECRET_ACCESS_KEY"),
+            "client_kwargs": {
+                "endpoint_url": os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+            }
+        }
+        df = pd.read_csv(s3_path, storage_options=storage_options)
+
+    # Fallback to local
     else:
         df = pd.read_csv(data_path)
     
-    # Save to output
+    # Save to KFP output artifact path
     df.to_csv(output_data.path, index=False)
     
     # Return metadata
@@ -59,7 +80,6 @@ def load_data(
     columns = df.columns.tolist()
     
     logger.info(f"Data loaded successfully! Shape: {shape}")
-    logger.info(f"Columns: {columns[:5]}...")
 
     LoadDataOutputs = namedtuple('LoadDataOutputs', ['dataset_shape', 'columns'])
     return LoadDataOutputs(
@@ -71,10 +91,10 @@ def load_data(
 # Component 2: Preprocess Data
 # ============================================
 @component(
-    base_image="python:3.9-slim",
+    base_image="python:3.11-slim",
     packages_to_install=[
         "pandas==2.0.3",
-        "numpy==1.24.3",
+        "numpy==1.26.2",
         "scikit-learn==1.5.2"
     ]
 )
@@ -150,10 +170,10 @@ def preprocess_data(
 # Component 3: Train Model
 # ============================================
 @component(
-    base_image="python:3.9-slim",
+    base_image="python:3.11-slim",
     packages_to_install=[
         "pandas==2.0.3",
-        "numpy==1.24.3",
+        "numpy==1.26.2",
         "scikit-learn==1.5.2",
         "mlflow==2.6.0"
     ]
@@ -246,10 +266,10 @@ def train_model(
 # Component 4: Evaluate Model
 # ============================================
 @component(
-    base_image="python:3.9-slim",
+    base_image="python:3.11-slim",
     packages_to_install=[
         "pandas==2.0.3",
-        "numpy==1.24.3",
+        "numpy==1.26.2",
         "scikit-learn==1.5.2"
     ]
 )
@@ -348,7 +368,7 @@ def evaluate_model(
 # Component 5: Deploy Model
 # ============================================
 @component(
-    base_image="python:3.9-slim",
+    base_image="python:3.11-slim",
     packages_to_install=[
         "mlflow==2.6.0",
         "scikit-learn==1.5.2",
@@ -375,7 +395,7 @@ def deploy_model(
         vectorizer = pickle.load(f)
     
     # Register with MLflow
-    mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI', 'http://mlflow:5000'))
+    mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI', 'http://mlflow.kubeflow.svc.cluster.local:5000'))
     mlflow.set_experiment("kubeflow_netflix")
     
     with mlflow.start_run(run_name="kubeflow_pipeline"):
@@ -400,14 +420,14 @@ def deploy_model(
 @dsl.pipeline(
     name="Netflix Content Recommendation Pipeline",
     description="End-to-end ML pipeline for Netflix content recommendations",
-    pipeline_root="gs://your-bucket/kubeflow-pipelines/netflix"
+    pipeline_root="minio://mlpipeline/v2/artifacts"
 )
 def netflix_pipeline(
-    data_path: str = "gs://netflix-data/netflix_titles.csv",
+    data_path: str = "https://github.com/Mipjeiger/Netflix-similarity-score-Netflix-show-vs-TV-show---Kaggle-assigned/blob/main/data/raw/netflix_titles.csv",
     n_features: int = 5000,
     min_df: int = 2,
     max_df: float = 0.8,
-    do_deploy: bool = True,  # 👈 Fixed: Changed name from deploy_model to do_deploy
+    do_deploy: bool = True,  
     model_name: str = "netflix_content_model"
 ):
     """Kubeflow pipeline for Netflix content recommendation"""
