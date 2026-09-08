@@ -10,7 +10,6 @@ data/models/
 .env
 .DS_Store
 *.pkl
-*.csv
 *.json
 .vscode/
 .idea/
