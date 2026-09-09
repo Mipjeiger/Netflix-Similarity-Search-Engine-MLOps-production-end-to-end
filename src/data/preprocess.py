@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def preprocess_netflix_data(df):
     """Preprocess Netflix data"""
     df = df.copy()
