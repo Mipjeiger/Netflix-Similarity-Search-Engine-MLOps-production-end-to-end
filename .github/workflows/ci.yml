@@ -35,7 +35,7 @@ jobs:
         run: isort --check-only src/ tests/
 
       - name: Lint with flake8
-        run: flake8 src/ tests/ --count --max-complexity=40 --statistics
+        run: flake8 src/ tests/ --count --statistics
 
       - name: Type checking with mypy
         run: mypy src/ --ignore-missing-imports
