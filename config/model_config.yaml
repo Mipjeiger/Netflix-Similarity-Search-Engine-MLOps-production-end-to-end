@@ -1,0 +1,11 @@
+model:
+  name: "netflix_content_model"
+vectorizer:
+  max_features: 5000
+  min_df: 2
+  max_df: 0.8
+  ngram_range: [1, 2]
+training:
+  retraining_schedule: False
+evaluation:
+  threshold: 0.6

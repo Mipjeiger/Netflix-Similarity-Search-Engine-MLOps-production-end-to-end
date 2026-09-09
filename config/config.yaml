@@ -1,0 +1,16 @@
+data:
+  raw_path: "data/raw/netflix_titles.csv"
+  processed_path: "data/processed/netflix_processed.csv"
+models:
+  n_features: 5000
+  n_recommendations: 5
+mlflow:
+  tracking_uri: "http://mlflow:5000"
+  experiment_name: "netflix_content"
+  model_name: "netflix_content_model"
+training:
+  test_size: 0.2
+  random_state: 42
+  validation_threshold: 0.6
+monitoring:
+  alert_threshold: 0.8
