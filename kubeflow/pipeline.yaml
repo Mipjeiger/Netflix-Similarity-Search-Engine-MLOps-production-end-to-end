@@ -2,7 +2,7 @@
 # Name: netflix-content-recommendation-pipeline
 # Description: End-to-end ML pipeline for Netflix content recommendations
 # Inputs:
-#    data_path: str [Default: 'https://github.com/Mipjeiger/Netflix-similarity-score-Netflix-show-vs-TV-show---Kaggle-assigned/blob/main/data/raw/netflix_titles.csv']
+#    data_path: str [Default: 'https://github.com/Mipjeiger/Netflix-Similarity-Search-Engine-MLOps-production-end-to-end/blob/main/data/raw/netflix_titles.csv']
 #    do_deploy: bool [Default: True]
 #    max_df: float [Default: 0.8]
 #    min_df: int [Default: 2.0]
@@ -212,10 +212,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==2.6.0'\
-          \ 'scikit-learn==1.5.2'  &&  python3 -m pip install --quiet --no-warn-script-location\
-          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
-          3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -242,7 +241,7 @@ deploymentSpec:
           \          'model_type': 'tfidf_cosine',\n            'deployed_by': 'kubeflow'\n\
           \        })\n\n    logger.info(f\"\u2705 Model '{model_name}' deployed successfully!\"\
           )\n    return f\"Model {model_name} deployed to MLflow\"\n\n"
-        image: python:3.11-slim
+        image: mipjeiger/netflix-kfp-base:v1
     exec-evaluate-model:
       container:
         args:
@@ -255,10 +254,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.0.3'\
-          \ 'numpy==1.26.2' 'scikit-learn==1.5.2'  &&  python3 -m pip install --quiet\
-          \ --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -312,7 +310,7 @@ deploymentSpec:
           \n    EvaluateModelOutputs = namedtuple('EvaluateOutputs', ['eval_metrics',\
           \ 'status'])\n    return EvaluateModelOutputs(\n        json.dumps(eval_metrics),\n\
           \        status\n    )\n\n"
-        image: python:3.11-slim
+        image: mipjeiger/netflix-kfp-base:v1
     exec-load-data:
       container:
         args:
@@ -325,10 +323,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.0.3'\
-          \ 'numpy==1.26.2' 's3fs==2023.9.2'  &&  python3 -m pip install --quiet --no-warn-script-location\
-          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
-          3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -344,25 +341,43 @@ deploymentSpec:
           ) -> NamedTuple('LoadDataOutputs', [('dataset_shape', str), ('columns',\
           \ str)]):\n    \"\"\"Load Netflix dataset from source\"\"\"\n    import\
           \ pandas as pd\n    import json\n    import logging\n    import os\n   \
-          \ from collections import namedtuple\n\n    logging.basicConfig(level=logging.INFO)\n\
+          \ import requests\n    from collections import namedtuple\n\n    logging.basicConfig(level=logging.INFO)\n\
           \    logger = logging.getLogger(__name__)\n\n    logger.info(f\"Loading\
-          \ data from: {data_path}\")\n\n    # Load data fro MinioS3 with fallback\
-          \ to local file system\n    if data_path.startswith(\"s3://\") or data_path.startswith(\"\
-          minio://\"):\n        s3_path = data_path.replace(\"minio://\", \"s3://\"\
-          )\n\n        # Configure local MinIO endpoint and credentials\n        storage_options\
-          \ = {\n            \"key\": os.getenv(\"AWS_ACCESS_KEY_ID\"),\n        \
-          \    \"secret\": os.getenv(\"AWS_SECRET_ACCESS_KEY\"),\n            \"client_kwargs\"\
-          : {\n                \"endpoint_url\": os.getenv(\"MINIO_ENDPOINT\", \"\
-          http://minio:9000\")\n            }\n        }\n        df = pd.read_csv(s3_path,\
-          \ storage_options=storage_options)\n\n    # Fallback to local\n    else:\n\
-          \        df = pd.read_csv(data_path)\n\n    # Save to KFP output artifact\
-          \ path\n    df.to_csv(output_data.path, index=False)\n\n    # Return metadata\n\
+          \ data from: {data_path}\")\n\n    # Handle GitHub blob URLs\n    if \"\
+          github.com\" in data_path and \"/blob/\" in data_path:\n        data_path\
+          \ = data_path.replace(\"github.com\", \"raw.githubusercontent.com\").replace(\"\
+          /blob/\", \"/\")\n        logger.info(f\"Converted to raw URL: {data_path}\"\
+          )\n\n    try:\n        # Load data from Minio/S3\n        if data_path.startswith(\"\
+          s3://\") or data_path.startswith(\"minio://\"):\n            s3_path = data_path.replace(\"\
+          minio://\", \"s3://\")\n            storage_options = {\n              \
+          \  \"key\": os.getenv(\"AWS_ACCESS_KEY_ID\"),\n                \"secret\"\
+          : os.getenv(\"AWS_SECRET_ACCESS_KEY\"),\n                \"client_kwargs\"\
+          : {\n                    \"endpoint_url\": os.getenv(\"MINIO_ENDPOINT\"\
+          , \"http://minio:9000\")\n                }\n            }\n           \
+          \ df = pd.read_csv(s3_path, storage_options=storage_options)\n\n       \
+          \ # Handle HTTP/HTTPS URLs\n        elif data_path.startswith(\"http://\"\
+          ) or data_path.startswith(\"https://\"):\n            # Try to read directly\
+          \ first\n            try:\n                df = pd.read_csv(data_path)\n\
+          \            except Exception as e:\n                logger.warning(f\"\
+          Direct read failed: {e}. Trying with requests...\")\n                response\
+          \ = requests.get(data_path)\n                response.raise_for_status()\n\
+          \n                # Use StringIO to read CSV from response text\n      \
+          \          from io import StringIO\n                df = pd.read_csv(StringIO(response.text))\n\
+          \n        # Local file\n        else:\n            df = pd.read_csv(data_path)\n\
+          \n    except Exception as e:\n        logger.error(f\"Failed to load data:\
+          \ {e}\")\n        # Try alternative method - download via requests\n   \
+          \     if data_path.startswith(\"http\"):\n            logger.info(\"Attempting\
+          \ to download via requests...\")\n            import requests\n        \
+          \    from io import StringIO\n            response = requests.get(data_path)\n\
+          \            response.raise_for_status()\n            df = pd.read_csv(StringIO(response.text))\n\
+          \        else:\n            raise\n\n    # Save to KFP output artifact path\n\
+          \    df.to_csv(output_data.path, index=False)\n\n    # Return metadata\n\
           \    shape = df.shape\n    columns = df.columns.tolist()\n\n    logger.info(f\"\
           Data loaded successfully! Shape: {shape}\")\n\n    LoadDataOutputs = namedtuple('LoadDataOutputs',\
           \ ['dataset_shape', 'columns'])\n    return LoadDataOutputs(\n        dataset_shape=json.dumps({\"\
           rows\": shape[0], \"cols\": shape[1]}),\n        columns=json.dumps(columns)\n\
           \    )\n\n"
-        image: python:3.11-slim
+        image: mipjeiger/netflix-kfp-base:v1
     exec-preprocess-data:
       container:
         args:
@@ -375,10 +390,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.0.3'\
-          \ 'numpy==1.26.2' 'scikit-learn==1.5.2'  &&  python3 -m pip install --quiet\
-          \ --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -402,16 +416,20 @@ deploymentSpec:
           \ df['cast'].fillna('Unknown')\n    df['country'] = df['country'].fillna('Unknown')\n\
           \    df['date_added'] = df['date_added'].fillna(method='ffill')\n    df['rating']\
           \ = df['rating'].fillna(df['rating'].mode()[0])\n    df['duration'] = df['duration'].fillna(df['duration'].mode()[0])\n\
-          \n    # Convert date\n    df['date_added'] = pd.to_datetime(df['date_added'])\n\
+          \n    # Convert date\n    df['date_added'] = df['date_added'].fillna(method='ffill')\n\
+          \    df['date_added'] = df['date_added'].astype(str).str.strip()\n    df['date_added']\
+          \ = pd.to_datetime(df['date_added'], format='mixed', errors='coerce')\n\n\
           \    df['year_added'] = df['date_added'].dt.year\n    df['month_added']\
           \ = df['date_added'].dt.month\n\n    # Create combined features for similarity\n\
           \    text_cols = ['director', 'cast', 'listed_in', 'description']\n    for\
           \ col in text_cols:\n        if col in df.columns:\n            df[col]\
-          \ = df[col].fillna('Unknown')\n\n    df['combined_features'] = df.apply(\n\
-          \        lambda r: \" \".join(\n            [str(r[c]) for c in text_cols\
-          \ if c in r and str(r[c]).strip() != \"Unknown\"]\n        ), axis=1\n \
-          \   )\n\n    # Save processed data\n    df.to_csv(output_data.path, index=False)\n\
-          \n    # Save feature info\n    feature_info = {\n        'features': df['combined_features'].tolist()[:5],\n\
+          \ = df[col].fillna('Unknown')\n            df[col] = df[col].astype(str).str.strip()\n\
+          \n    df['combined_features'] = df.apply(\n        lambda r: \" \".join(\n\
+          \            [str(r[c]) for c in text_cols if c in r and str(r[c]).strip()\
+          \ != \"Unknown\" \\\n             and str(r[c]).strip() != \"nan\" and str(r[c]).strip()\
+          \ != \"None\"]\n        ), axis=1\n    )\n\n    # Save processed data\n\
+          \    df.to_csv(output_data.path, index=False)\n\n    # Save feature info\n\
+          \    feature_info = {\n        'features': df['combined_features'].tolist()[:5],\n\
           \        'feature_names': df.columns.tolist(),\n        'n_samples': len(df)\n\
           \    }\n    with open(output_features.path, 'w') as f:\n        json.dump(feature_info,\
           \ f)\n\n    # Missing values summary\n    missing = df.isnull().sum().to_dict()\n\
@@ -420,7 +438,7 @@ deploymentSpec:
           \ ['processed_shape', 'missing_values'])\n    return PreprocessOutputs(\n\
           \        processed_shape=json.dumps({\"rows\": df.shape[0], \"cols\": df.shape[1]}),\n\
           \        missing_values=json.dumps(missing)\n    )\n\n"
-        image: python:3.11-slim
+        image: mipjeiger/netflix-kfp-base:v1
     exec-train-model:
       container:
         args:
@@ -433,11 +451,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.0.3'\
-          \ 'numpy==1.26.2' 'scikit-learn==1.5.2' 'mlflow==2.6.0'  &&  python3 -m\
-          \ pip install --quiet --no-warn-script-location 'kfp==2.17.0' '--no-deps'\
-          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
-          \n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -486,7 +502,7 @@ deploymentSpec:
           \ ['model_info', 'train_metrics'])\n    return TrainModelOutputs(\n    \
           \    json.dumps({'model_type': 'tfidf_cosine', 'status': 'success'}),\n\
           \        json.dumps(metrics)\n    )\n\n"
-        image: python:3.11-slim
+        image: mipjeiger/netflix-kfp-base:v1
 pipelineInfo:
   description: End-to-end ML pipeline for Netflix content recommendations
   name: netflix-content-recommendation-pipeline
@@ -590,7 +606,7 @@ root:
   inputDefinitions:
     parameters:
       data_path:
-        defaultValue: https://github.com/Mipjeiger/Netflix-similarity-score-Netflix-show-vs-TV-show---Kaggle-assigned/blob/main/data/raw/netflix_titles.csv
+        defaultValue: https://github.com/Mipjeiger/Netflix-Similarity-Search-Engine-MLOps-production-end-to-end/blob/main/data/raw/netflix_titles.csv
         isOptional: true
         parameterType: STRING
       do_deploy:

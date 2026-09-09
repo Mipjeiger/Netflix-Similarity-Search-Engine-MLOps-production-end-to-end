@@ -30,14 +30,7 @@ DATA_LOCAL_PATH = Path(__file__).parent.parent.parent / "data" / "raw" / "netfli
 # ============================================
 # Component 1: Load Dataset
 # ============================================
-@component(
-    base_image="python:3.11-slim",
-    packages_to_install=[
-        "pandas==2.0.3",
-        "numpy==1.26.2",
-        "s3fs==2023.9.2"
-    ]
-)
+@component(base_image="mipjeiger/netflix-kfp-base:v1")
 def load_data(
     data_path: str,
     output_data: Output[Dataset]
@@ -47,6 +40,7 @@ def load_data(
     import json
     import logging
     import os
+    import requests
     from collections import namedtuple
     
     logging.basicConfig(level=logging.INFO)
@@ -54,23 +48,54 @@ def load_data(
     
     logger.info(f"Loading data from: {data_path}")
     
-    # Load data fro MinioS3 with fallback to local file system
-    if data_path.startswith("s3://") or data_path.startswith("minio://"):
-        s3_path = data_path.replace("minio://", "s3://")
-
-        # Configure local MinIO endpoint and credentials
-        storage_options = {
-            "key": os.getenv("AWS_ACCESS_KEY_ID"),
-            "secret": os.getenv("AWS_SECRET_ACCESS_KEY"),
-            "client_kwargs": {
-                "endpoint_url": os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+    # Handle GitHub blob URLs
+    if "github.com" in data_path and "/blob/" in data_path:
+        data_path = data_path.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+        logger.info(f"Converted to raw URL: {data_path}")
+    
+    try:
+        # Load data from Minio/S3
+        if data_path.startswith("s3://") or data_path.startswith("minio://"):
+            s3_path = data_path.replace("minio://", "s3://")
+            storage_options = {
+                "key": os.getenv("AWS_ACCESS_KEY_ID"),
+                "secret": os.getenv("AWS_SECRET_ACCESS_KEY"),
+                "client_kwargs": {
+                    "endpoint_url": os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+                }
             }
-        }
-        df = pd.read_csv(s3_path, storage_options=storage_options)
+            df = pd.read_csv(s3_path, storage_options=storage_options)
+        
+        # Handle HTTP/HTTPS URLs
+        elif data_path.startswith("http://") or data_path.startswith("https://"):
+            # Try to read directly first
+            try:
+                df = pd.read_csv(data_path)
+            except Exception as e:
+                logger.warning(f"Direct read failed: {e}. Trying with requests...")
+                response = requests.get(data_path)
+                response.raise_for_status()
 
-    # Fallback to local
-    else:
-        df = pd.read_csv(data_path)
+                # Use StringIO to read CSV from response text
+                from io import StringIO
+                df = pd.read_csv(StringIO(response.text))
+        
+        # Local file
+        else:
+            df = pd.read_csv(data_path)
+            
+    except Exception as e:
+        logger.error(f"Failed to load data: {e}")
+        # Try alternative method - download via requests
+        if data_path.startswith("http"):
+            logger.info("Attempting to download via requests...")
+            import requests
+            from io import StringIO
+            response = requests.get(data_path)
+            response.raise_for_status()
+            df = pd.read_csv(StringIO(response.text))
+        else:
+            raise
     
     # Save to KFP output artifact path
     df.to_csv(output_data.path, index=False)
@@ -90,14 +115,7 @@ def load_data(
 # ============================================
 # Component 2: Preprocess Data
 # ============================================
-@component(
-    base_image="python:3.11-slim",
-    packages_to_install=[
-        "pandas==2.0.3",
-        "numpy==1.26.2",
-        "scikit-learn==1.5.2"
-    ]
-)
+@component(base_image="mipjeiger/netflix-kfp-base:v1")
 def preprocess_data(
     input_data: Input[Dataset],
     output_data: Output[Dataset],
@@ -126,7 +144,10 @@ def preprocess_data(
     df['duration'] = df['duration'].fillna(df['duration'].mode()[0])
     
     # Convert date
-    df['date_added'] = pd.to_datetime(df['date_added'])
+    df['date_added'] = df['date_added'].fillna(method='ffill')
+    df['date_added'] = df['date_added'].astype(str).str.strip()
+    df['date_added'] = pd.to_datetime(df['date_added'], format='mixed', errors='coerce')
+
     df['year_added'] = df['date_added'].dt.year
     df['month_added'] = df['date_added'].dt.month
     
@@ -135,10 +156,12 @@ def preprocess_data(
     for col in text_cols:
         if col in df.columns:
             df[col] = df[col].fillna('Unknown')
+            df[col] = df[col].astype(str).str.strip()
 
     df['combined_features'] = df.apply(
         lambda r: " ".join(
-            [str(r[c]) for c in text_cols if c in r and str(r[c]).strip() != "Unknown"]
+            [str(r[c]) for c in text_cols if c in r and str(r[c]).strip() != "Unknown" \
+             and str(r[c]).strip() != "nan" and str(r[c]).strip() != "None"]
         ), axis=1
     )
     
@@ -169,15 +192,7 @@ def preprocess_data(
 # ============================================
 # Component 3: Train Model
 # ============================================
-@component(
-    base_image="python:3.11-slim",
-    packages_to_install=[
-        "pandas==2.0.3",
-        "numpy==1.26.2",
-        "scikit-learn==1.5.2",
-        "mlflow==2.6.0"
-    ]
-)
+@component(base_image="mipjeiger/netflix-kfp-base:v1")
 def train_model(
     processed_data: Input[Dataset],
     model_output: Output[Model],
@@ -265,14 +280,7 @@ def train_model(
 # ============================================
 # Component 4: Evaluate Model
 # ============================================
-@component(
-    base_image="python:3.11-slim",
-    packages_to_install=[
-        "pandas==2.0.3",
-        "numpy==1.26.2",
-        "scikit-learn==1.5.2"
-    ]
-)
+@component(base_image="mipjeiger/netflix-kfp-base:v1")
 def evaluate_model(
     processed_data: Input[Dataset],
     model_input: Input[Model],
@@ -367,13 +375,7 @@ def evaluate_model(
 # ============================================
 # Component 5: Deploy Model
 # ============================================
-@component(
-    base_image="python:3.11-slim",
-    packages_to_install=[
-        "mlflow==2.6.0",
-        "scikit-learn==1.5.2",
-    ]
-)
+@component(base_image="mipjeiger/netflix-kfp-base:v1")
 def deploy_model(
     model_input: Input[Model],
     model_name: str = "netflix_content_model",
@@ -423,14 +425,14 @@ def deploy_model(
     pipeline_root="minio://mlpipeline/v2/artifacts"
 )
 def netflix_pipeline(
-    data_path: str = "https://github.com/Mipjeiger/Netflix-similarity-score-Netflix-show-vs-TV-show---Kaggle-assigned/blob/main/data/raw/netflix_titles.csv",
+    data_path: str = "https://github.com/Mipjeiger/Netflix-Similarity-Search-Engine-MLOps-production-end-to-end/blob/main/data/raw/netflix_titles.csv",
     n_features: int = 5000,
     min_df: int = 2,
     max_df: float = 0.8,
     do_deploy: bool = True,  
     model_name: str = "netflix_content_model"
 ):
-    """Kubeflow pipeline for Netflix content recommendation"""
+    """Kubeflow pipeline for Netflix content recommendation""" 
     
     # Step 1: Load Data
     load_task = load_data(

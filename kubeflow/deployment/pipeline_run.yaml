@@ -70,7 +70,7 @@ spec:
         memory: "8Gi"
   
   # Timeout settings
-  timeout: 3600s  # 1 hour
+  timeout: "3600s"  # 1 hour
   
   # Artifact location
   artifactLocation:
