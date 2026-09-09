@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def preprocess_netflix_data(df):
     """Preprocess Netflix data"""
     df = df.copy()
@@ -29,7 +30,8 @@ def preprocess_netflix_data(df):
     df["combined_features"] = df.apply(
         lambda r: " ".join(
             [str(r[c]) for c in text_cols if c in r and str(r[c]).strip() != "Unknown"]
-        ), axis=1
+        ),
+        axis=1,
     )
 
     return df

@@ -31,6 +31,9 @@ jobs:
       - name: Check formatting with Black
         run: black --check src/ tests/
 
+      - name: Auto-format with Black
+        run: black src/ tests/
+
       - name: Check import sorting with isort
         run: isort --check-only src/ tests/
 
