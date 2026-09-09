@@ -260,6 +260,8 @@ curl -X POST http://localhost:8080/api/v1/dags/netflix_model_training_pipeline/d
 - **CLI:**
   ```bash
   docker exec airflow airflow tasks state netflix_model_training_pipeline train_model <execution_date>
+  # or
+  docker compose exec airflow airflow tasks test netflix_model_training_pipeline train_model 2026-09-03 (current date)
   docker logs airflow-scheduler --follow
   ```
 
@@ -329,4 +331,3 @@ data/models/metrics_report_*.json         # output
 - `schedule=None` means they never run automatically — must be triggered manually or via `TriggerDagRunOperator` / API.
 - To validate without Docker: `docker exec airflow airflow dags list` / `airflow dags test netflix_model_training_pipeline 2024-01-01` (runs tasks sequentially without scheduler).
 - Do not commit `.env` or `data/` artifacts.
-

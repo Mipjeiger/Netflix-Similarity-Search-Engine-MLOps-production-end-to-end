@@ -1,6 +1,5 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.email import EmailOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 import pandas as pd
@@ -56,39 +55,44 @@ MODEL_PATH = _get_var('model_path', '/opt/airflow/data/models')
 
 def extract_data(**context):
     """Extract data from the source CSV file."""
-    if os.path.exists(DATA_PATH):
-        df = pd.read_csv(DATA_PATH)
-        logger.info(f"✅ Data head been read as: \n{df.head()}")
-
     if not os.path.isfile(DATA_PATH):
-        raise FileNotFoundError(
-            f"Input dataset not found at {DATA_PATH}. "
-            "Mount the dataset at ./data/raw/netflix_titles.csv "
-            "or set the Airflow data_path variable to the correct path."
-        )
+        raise FileNotFoundError(f"Data file not found at {DATA_PATH}")
 
-    return pd.read_csv(DATA_PATH).to_json()
+    logger.info(f"✅ Source data file found at {DATA_PATH}. Extracting...")
+    return DATA_PATH
 
 def preprocess_data(**context):
     """Preprocess the extracted data."""
     ti = context['task_instance']
-    extracted_json = ti.xcom_pull(task_ids='extract_data')
-    if not extracted_json:
-        raise ValueError("extract_data returned no dataset.")
 
-    df = pd.read_json(StringIO(extracted_json))
+    # Try pulling key-specific XCom or general return value
+    raw_csv_path = ti.xcom_pull(task_ids='extract_data', key='return_value')
+    if not raw_csv_path:
+        raw_csv_path = ti.xcom_pull(task_ids='extract_data')
+
+    # Fallback to default DATA_PATH if XCom is empty
+    if not raw_csv_path or not os.path.exists(str(raw_csv_path)):
+        logger.warning(f"XCom for raw data path is empty or file does not exist. Falling back to default DATA_PATH: {DATA_PATH}")
+        raw_csv_path = DATA_PATH
+
+    if not os.path.exists(raw_csv_path):
+        raise FileNotFoundError(f"Input dataset not found at path: {raw_csv_path}")
+
+    # Read dataset from verified path
+    df = pd.read_csv(raw_csv_path)
     df_processed = preprocess_netflix_data(df)
-    df_processed['combined_features'] = df_processed.apply(
-        lambda r: ' '.join([str(r[c]) for c in ['director','cast','listed_in','description'] if r[c] != 'Unknown']), axis=1
-    )
+
+    # Save processed data output
     os.makedirs(PROCESSED_PATH, exist_ok=True)
-    df_processed.to_csv(f"{PROCESSED_PATH}/netflix_processed.csv", index=False)
-    ti.xcom_push(key='processed_data', value=df_processed.to_json())
-    return df_processed.to_json()
+    output_filepath = os.path.join(PROCESSED_PATH, "netflix_processed.csv")
+    df_processed.to_csv(output_filepath, index=False)
+
+    ti.xcom_push(key='processed_data_path', value=output_filepath)
+    logger.info(f"✅ Processed data saved successfully to {output_filepath}")
+    return output_filepath
 
 def train_model(**context):
     """Train the content-based recommendation model."""
-    # Resolve tracking URI at runtime (env overrides Variable)
     tracking_uri = os.getenv('MLFLOW_TRACKING_URI', MLFLOW_TRACKING_URI)
     mlflow.set_tracking_uri(tracking_uri)
     logger.info(f"MLflow tracking URI: {tracking_uri}")
@@ -102,20 +106,18 @@ def train_model(**context):
 
     mlflow.set_experiment("netflix_content_recommendation")
     ti = context['task_instance']
-    raw = ti.xcom_pull(task_ids='preprocess_data', key='processed_data')
+    processed_path = ti.xcom_pull(task_ids='preprocess_data', key='processed_data_path')
 
-    if raw is None:
-        raw = ti.xcom_pull(task_ids='preprocess_data')
-    if raw is None:
-        raise ValueError("preprocess_data returned no data via XCom")
-
+    if not processed_path or not os.path.exists(processed_path):
+        processed_path = os.path.join(PROCESSED_PATH, "netflix_processed.csv")
+         
     # Read json data into DataFrame
-    df = pd.read_json(StringIO(raw))
+    df = pd.read_csv(processed_path)
 
     # Mlflow training
     with mlflow.start_run(run_name=f"training_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
         tfidf = TfidfVectorizer(max_features=5000, min_df=2, max_df=0.8, ngram_range=(1, 2))
-        tfidf_matrix = tfidf.fit_transform(df['combined_features'])
+        tfidf_matrix = tfidf.fit_transform(df['combined_features'].fillna(''))
         similarity = cosine_similarity(tfidf_matrix)
 
         # Mlflow logging
@@ -125,7 +127,6 @@ def train_model(**context):
         os.makedirs(MODEL_PATH, exist_ok=True)
         with open(f"{MODEL_PATH}/tfidf_vectorizer.pkl", 'wb') as f:
             pickle.dump(tfidf, f)
-        df.to_csv(f"{MODEL_PATH}/processed_data.csv", index=False)
 
         # Mlflow sklearn model logging
         mlflow.sklearn.log_model(tfidf, name="tfidf_model", registered_model_name=MODEL_NAME)
@@ -134,7 +135,7 @@ def train_model(**context):
         return run_id
 
 def evaluate_model(**context):
-    """Evaluate the trained model"""
+    """Evaluate trained vectorizer precision."""
     ti = context['task_instance']
     run_id = ti.xcom_pull(task_ids='train_model', key='mlflow_run_id')
 
@@ -142,65 +143,67 @@ def evaluate_model(**context):
         logger.error("No MLflow run ID found. Skipping evaluation.")
         return
 
-    df = pd.read_csv(f"{PROCESSED_PATH}/netflix_processed.csv")
-    df['combined_features'] = df.apply(
-        lambda r: ' '.join([str(r[c]) for c in ['director', 'cast', 'listed_in', 'description'] if r[c] != 'Unknown']), axis=1
-    )
+    processed_file = os.path.join(PROCESSED_PATH, "netflix_processed.csv")
+    df = pd.read_csv(processed_file)
+    
     mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI', MLFLOW_TRACKING_URI))
     client = mlflow.tracking.MlflowClient()
+    
     try:
-        versions = client.get_latest_versions(name=MODEL_NAME)
-    except Exception:
-        # MLflow 3.x fallback
         versions = client.search_model_versions(f"name='{MODEL_NAME}'")
-        versions = sorted(versions, key=lambda v: int(v.version), reverse=True)[:1]
+        versions = sorted(versions, key=lambda v: int(v.version), reverse=True)
+    except Exception as e:
+        logger.error(f"Failed to fetch model versions: {e}")
+        return
 
     if not versions:
         logger.error("No registered model versions found. Skipping evaluation.")
         return
     
-    ver = versions[0].version
-    model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{ver}")
+    latest_ver = versions[0].version
+    model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{latest_ver}")
+    
     sample = df.sample(min(100, len(df)), random_state=42)
-    tfidf_matrix = model.transform(sample['combined_features'])
+    tfidf_matrix = model.transform(sample['combined_features'].fillna(''))
     sim = cosine_similarity(tfidf_matrix)
-    precision = np.mean([np.mean([1 if sample.iloc[i]['listed_in'] in sample.iloc[np.argsort(sim[i])[-6:-1]]['listed_in'].values else 0]) for i in range(len(sample))])
+    
+    precision = np.mean([
+        1 if sample.iloc[i]['listed_in'] in sample.iloc[np.argsort(sim[i])[-6:-1]]['listed_in'].values else 0 
+        for i in range(len(sample))
+    ])
 
     with mlflow.start_run(run_id=run_id):
-        mlflow.log_metric('evaluation_precision', precision)
+        mlflow.log_metric('evaluation_precision', float(precision))
         logger.info(f"✅ Model evaluation completed. Precision@5: {precision:.4f}")
+        
     ti.xcom_push(key='avg_precision', value=precision)
     return precision
 
 def promote_model(**context):
-    """Promote the model to production"""
+    """Promote top model version using MLflow Aliases."""
     ti = context['task_instance']
     precision = ti.xcom_pull(task_ids='evaluate_model', key='avg_precision')
 
-    if precision and precision >= 0.6:
+    if precision is not None and precision >= 0.6:
         client = mlflow.tracking.MlflowClient()
         mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI', MLFLOW_TRACKING_URI))
-        try:
-            versions = client.get_latest_versions(name=MODEL_NAME, stages=['None'])
-        except Exception:
-            versions = client.search_model_versions(f"name='{MODEL_NAME}'")
-            # filter None stage
-            versions = [v for v in versions if v.current_stage == 'None']
-            versions = sorted(versions, key=lambda v: int(v.version), reverse=True)[:1]
+        
+        versions = client.search_model_versions(f"name='{MODEL_NAME}'")
+        versions = sorted(versions, key=lambda v: int(v.version), reverse=True)
 
         if versions:
+            latest_version = versions[0].version
             try:
-                client.transition_model_version_stage(MODEL_NAME, versions[0].version, stage='Production')
+                # MLflow 3.x standard alias promotion
+                client.set_registered_model_alias(MODEL_NAME, "production", latest_version)
+                logger.info(f"✅ Model version {latest_version} promoted to alias 'production'")
             except Exception:
-                # MLflow 3.x uses set_registered_model_alias or update stage via client
-                try:
-                    client.set_registered_model_alias(MODEL_NAME, "production", versions[0].version)
-                except Exception as e:
-                    logger.warning(f"Could not promote model: {e}")
-            logger.info(f"✅ Model promoted to Production. Version: {versions[0].version}")
+                # Fallback for legacy MLflow stages
+                client.transition_model_version_stage(MODEL_NAME, latest_version, stage='Production')
+                logger.info(f"✅ Model version {latest_version} transitioned to Production stage")
 
 def generate_report(**context):
-    """Generate a report of the training and evaluation"""
+    """Write run summary report to disk."""
     ti = context['task_instance']
     
     report = {
@@ -209,11 +212,15 @@ def generate_report(**context):
         'precision': ti.xcom_pull(task_ids='evaluate_model', key='avg_precision'),
         'promoted': 'Yes' if ti.xcom_pull(task_ids='promote_model') else 'No'
     }
-    with open(f"{MODEL_PATH}/metrics_report_{datetime.now().strftime('%Y%m%d')}.json", 'w') as f:
-        json.dump(report, f)
+    
+    os.makedirs(MODEL_PATH, exist_ok=True)
+    report_path = f"{MODEL_PATH}/metrics_report_{datetime.now().strftime('%Y%m%d')}.json"
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    logger.info(f"✅ Report saved to {report_path}")
 
-# Define the DAG
-dag = DAG(
+# DAG Configuration
+with DAG(
     'netflix_model_training_pipeline',
     default_args=default_args,
     description='A weekly training pipeline for Netflix content recommendation model',
@@ -221,58 +228,37 @@ dag = DAG(
     catchup=False,
     is_paused_upon_creation=False,
     tags=['netflix', 'mlflow', 'training']
-)
+) as dag:
 
-# Define the tasks
-extract = PythonOperator(
-    task_id='extract_data',
-    python_callable=extract_data,
-    provide_context=True,
-    dag=dag
-)
+    extract = PythonOperator(
+        task_id='extract_data',
+        python_callable=extract_data
+    )
 
-preprocess = PythonOperator(
-    task_id='preprocess_data',
-    python_callable=preprocess_data,
-    provide_context=True,
-    dag=dag
-)
+    preprocess = PythonOperator(
+        task_id='preprocess_data',
+        python_callable=preprocess_data
+    )
 
-train = PythonOperator(
-    task_id='train_model',
-    python_callable=train_model,
-    provide_context=True,
-    dag=dag
-)
+    train = PythonOperator(
+        task_id='train_model',
+        python_callable=train_model
+    )
 
-evaluate = PythonOperator(
-    task_id='evaluate_model',
-    python_callable=evaluate_model,
-    provide_context=True,
-    dag=dag
-)
+    evaluate = PythonOperator(
+        task_id='evaluate_model',
+        python_callable=evaluate_model
+    )
 
-promote = PythonOperator(
-    task_id='promote_model',
-    python_callable=promote_model,
-    provide_context=True,
-    dag=dag
-)
+    promote = PythonOperator(
+        task_id='promote_model',
+        python_callable=promote_model
+    )
 
-report = PythonOperator(
-    task_id='generate_report',
-    python_callable=generate_report,
-    provide_context=True,
-    dag=dag
-)
+    report = PythonOperator(
+        task_id='generate_report',
+        python_callable=generate_report
+    )
 
-email = EmailOperator(
-    task_id='send_notification',
-    to='cubudida@gmail.com',
-    subject='Netflix Training Pipeline Complete',
-    html_content='<p>Training completed at {{ execution_date }}</p>',
-    dag=dag
-)
-
-# Define task dependencies
-extract >> preprocess >> train >> evaluate >> promote >> report >> email
+    # Task Pipeline Pipeline execution order
+    extract >> preprocess >> train >> evaluate >> promote >> report
