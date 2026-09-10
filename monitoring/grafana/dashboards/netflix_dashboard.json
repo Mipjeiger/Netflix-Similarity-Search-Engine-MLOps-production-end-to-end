@@ -1,0 +1,17 @@
+{
+    "title": "Netflix MLOps Dashboard",
+    "pantes": [
+        {
+            "title": "API Requests",
+            "targets": [{"expr": "rate(api_request_total[5m])"}]
+        },
+        {
+            "title": "Model Accuracy",
+            "targets": [{"expr": "model_accuracy"}]
+        },
+        {
+            "title": "Latency",
+            "targets": [{"expr": "histogram_quantile(0.95, sum(rate(api_latency_bucket[5m])) by (le))"}]
+        }
+    ]
+}
