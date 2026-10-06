@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-service
+  namespace: kubeflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-service
+  template:
+    metadata:
+      labels:
+        app: mlflow-service
+    spec:
+      containers:
+        - name: mlflow
+          image: netflix_engineering-mlflow:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--allowed-hosts", "*"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  namespace: kubeflow
+spec:
+  selector:
+    app: mlflow-service
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP
